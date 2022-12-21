@@ -15,8 +15,13 @@ const unsigned int HEIGHT = 40;
 ////////////////////////////////////////////////
 struct Position
 {
-    float x;
-    float y;
+    int x;
+    int y;
+
+    float distance(const Position& autre)
+    {
+        return std::sqrt(std::pow(autre.x - x, 2) + std::pow(autre.y - y, 2));
+    }
 };
 
 ////////////////////////////////////////////////
@@ -73,14 +78,14 @@ public:
     }
 
     template <typename Type, typename Enemy>
-    void collide_with_enemy(Position* position)
+    void collide_with_enemy(const Position& position)
     {
         auto&& enemies = m_helper.acquire<Position, Enemy>();
 
         for(auto&& [e, p]: enemies)
         {
             auto&& pos = std::get<Position>(*p);
-            if(sf::FloatRect(pos.x, pos.y, WIDTH, HEIGHT).intersects(sf::FloatRect(position->x, position->y, WIDTH, HEIGHT)))
+            if(sf::FloatRect(pos.x, pos.y, WIDTH, HEIGHT).intersects(sf::FloatRect(position.x, position.y, WIDTH, HEIGHT)))
             {
                 m_helper.remove<Enemy>(e);
                 m_helper.add<Type>(e, {});
@@ -90,17 +95,30 @@ public:
 
     virtual void update()
     {
-        m_helper.for_each<Position>([&](auto entity, auto position)
+        auto positions = m_helper.acquire<Position>();
+
+        for(auto [entity, p]: positions)
         {
-            if(m_helper.has<Rock, Scissors>(entity))
-                std::cout << "CHELOU" << std::endl;
+            auto&& position = std::get<Position>(*p);
+
             if(m_helper.has<Rock>(entity))
+            {
                 collide_with_enemy<Rock, Scissors>(position);
-            else if(m_helper.has<Scissors>(entity))
+                continue;
+            }
+                
+            if(m_helper.has<Scissors>(entity))
+            {
                 collide_with_enemy<Scissors, Paper>(position);
-            else if(m_helper.has<Paper>(entity))
+                continue;
+            }
+                
+            if(m_helper.has<Paper>(entity))
+            {
                 collide_with_enemy<Paper, Rock>(position);
-        });
+                continue;
+            }
+        }
     }
 
 private:
@@ -122,26 +140,18 @@ public:
     }
 
     template <typename Type>
-    Position closest_of_type(const Position& position, bool& found)
+    Position closest_of_type(Position& position, bool& found)
     {
-        found = false;
-        Position closest;
-        float min = 0.f;
-
-        bool first = true;
-        m_helper.for_each<Position, Type>([&](auto e, auto p)
+        auto elements = m_helper.acquire<Position, Type>();
+        auto min = std::min_element(elements.begin(), elements.end(), [&](auto first, auto second)
         {
-            float distance = std::sqrt(std::pow(p->x - position.x, 2) + std::pow(p->y - position.y, 2));
-            if(first || distance < min)
-            {
-                min = distance;
-                closest = *p;
-                first = false;
-                found = true;
-            }
+            return position.distance(std::get<Position>(*first.second)) < position.distance(std::get<Position>(*second.second));
         });
 
-        return closest;
+        if(min != elements.end())
+            found = true;
+
+        return found ? std::get<Position>(*(min->second)) : Position{};
     }
 
     virtual void update()
@@ -150,21 +160,9 @@ public:
         {
             m_helper.for_each<Position>([&](auto entity, auto position)
             {
-                if(position->x < 0)
-                    position->x = 0;
-                if(position->y < 0)
-                    position->y = 0;
-                if(position->x > MAX_X - WIDTH)
-                    position->x = MAX_X - WIDTH;
-                if(position->y > MAX_Y - WIDTH)
-                    position->y = MAX_Y - WIDTH;
-
                 Position enemy;
-                bool found;
+                bool found = false;
 
-                // if(m_helper.has<Scissors>(entity) && m_helper.has<Paper>(entity))
-                    // std::cout << "CHELOUUU" << std::endl;
-                
                 if(m_helper.has<Rock>(entity))
                     enemy = closest_of_type<Scissors>(*position, found);
                 else if(m_helper.has<Scissors>(entity))
@@ -172,16 +170,15 @@ public:
                 else if(m_helper.has<Paper>(entity))
                     enemy = closest_of_type<Rock>(*position, found);
 
-                Position vector = {enemy.x - position->x, enemy.y - position->y};
-                float norm_vector = std::sqrt(std::pow(vector.x, 2) + std::pow(vector.y, 2));
-
-                if(norm_vector == 0.f)
-                    norm_vector = 0.1f;
-
                 if(found)
                 {
-                    position->x += vector.x / norm_vector;
-                    position->y += vector.y / norm_vector;
+                    Position vector = {enemy.x - position->x, enemy.y - position->y};
+
+                    if(vector.x != 0)
+                        position->x += vector.x / std::abs(vector.x);
+
+                    if(vector.y != 0)
+                        position->y += vector.y / std::abs(vector.y);
                 }  
             });
 
@@ -195,48 +192,11 @@ private:
 };
 
 ////////////////////////////////////////////////
-class Factory : public System
-{
-public:
-    Factory(Manager& helper) : System(helper)
-    {
-
-    }
-
-    virtual System::State state()
-    {
-        return System::State::NONE;
-    }
-
-    virtual void update()
-    {
-        int count = 0;
-        m_helper.for_each<Rock>([&](auto entity, auto element) { count++; });
-        std::cout << "rock count: " << count << std::endl;
-
-        count = 0;
-        m_helper.for_each<Paper>([&](auto entity, auto element) { count++; });
-        std::cout << "paper count: " << count << std::endl;
-
-        count = 0;
-        m_helper.for_each<Scissors>([&](auto entity, auto element) { count++; });
-        std::cout << "scissors count: " << count << std::endl;
-
-        std::cout << std::endl;
-    }
-
-private:
-};
-
-////////////////////////////////////////////////
 class Render : public System
 {
 public:
     Render(Manager& helper) : System(helper), m_window(sf::VideoMode(MAX_X, MAX_Y), "Rock Paper Scissors"), m_paused(false)
     {
-        m_grid_view.setCenter(m_grid.getLocalBounds().width / 2, m_grid.getLocalBounds().height / 2);
-        m_grid_view.setSize(m_window.getSize().x, m_window.getSize().y);
-
         m_ui_view.setCenter(m_window.getSize().x / 2, m_window.getSize().y / 2);
         m_ui_view.setSize(m_window.getSize().x, m_window.getSize().y);
 
@@ -246,6 +206,54 @@ public:
     virtual System::State state()
     {
         return m_window.isOpen() ? (m_paused ? System::State::PAUSE : System::State::PLAY) : System::State::CLOSE;
+    }
+    
+    static void dump(Manager& helper)
+    {
+        helper.for_each<Position>([&](auto entity, auto position) {
+            auto components = helper.retrieve(entity);
+            std::sort(components.begin(), components.end(), [](auto first, auto second)
+            {
+                return first->index() < second->index();
+            });
+
+            std::cout << entity << " ";
+            for(auto&& component: components)
+            {
+                switch(component->index())
+                {
+                    case 0: 
+                        std::cout << "Position ";
+                        break;
+                    case 1: 
+                        std::cout << "Rock ";
+                        break;
+                    case 2: 
+                        std::cout << "Paper ";
+                        break;
+                    case 3: 
+                        std::cout << "Scissors ";
+                        break;
+                    default:
+                        break;
+                }
+            }
+            std::cout << std::endl;
+        });
+
+        int count = 0;
+        helper.for_each<Rock>([&](auto entity, auto element) { count++; });
+        std::cout << std::dec << "rock count: " << count << std::endl;
+
+        count = 0;
+        helper.for_each<Paper>([&](auto entity, auto element) { count++; });
+        std::cout << "paper count: " << count << std::endl;
+
+        count = 0;
+        helper.for_each<Scissors>([&](auto entity, auto element) { count++; });
+        std::cout << "scissors count: " << count << std::endl;
+
+        std::cout << std::endl;
     }
 
     virtual void update()
@@ -257,21 +265,25 @@ public:
                 m_window.close();
             else if(event.type == sf::Event::Resized)
             {
-                m_grid_view.setSize(m_window.getSize().x, m_window.getSize().y);
-
                 m_ui_view.setCenter(m_window.getSize().x / 2, m_window.getSize().y / 2);
                 m_ui_view.setSize(m_window.getSize().x, m_window.getSize().y);
+            }
+            else if(event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::Space)
+            {
+                dump(m_helper);
             }
         }
 
         m_window.clear(sf::Color::White);
 
-        sf::Sprite sprite(m_texture_rps, {300, 140, 270, 450});
+        m_window.setView(m_ui_view);
 
         m_helper.for_each<Position>([&](auto entity, auto position)
         {
             sf::Transform translation;
             translation.translate(position->x, position->y);
+
+            sf::Sprite sprite(m_texture_rps);
 
             if(m_helper.has<Rock>(entity))
                 sprite.setTextureRect({650, 350, 350, 230});
@@ -290,9 +302,7 @@ public:
 
 private:
     sf::RenderWindow m_window;
-    sf::View m_grid_view;
     sf::View m_ui_view;
-    sf::RectangleShape m_grid;
     sf::Clock m_clock;
     sf::Texture m_texture_rps;
     bool m_paused;
@@ -304,12 +314,12 @@ int main()
     Manager helper;
 
     std::random_device m_device;  
-    std::mt19937 m_gen; 
+    std::mt19937 m_gen(m_device()); 
     std::uniform_int_distribution<> m_distrib_type(0, 2);
     std::uniform_int_distribution<> m_distrib_pos_x(0, MAX_X - WIDTH);
     std::uniform_int_distribution<> m_distrib_pos_y(0, MAX_Y - HEIGHT);
 
-    for(int i = 0; i < ELEMENT_COUNT; ++i)
+    for(unsigned int i = 0; i < ELEMENT_COUNT; ++i)
     {
         int type = m_distrib_type(m_gen);
 
@@ -331,7 +341,7 @@ int main()
 
     std::vector<std::shared_ptr<System>> systems 
     { 
-        std::make_shared<Factory>(helper),
+        // std::make_shared<Factory>(helper),
         std::make_shared<Movement>(helper),
         std::make_shared<Collision>(helper),
         std::make_shared<Render>(helper)
@@ -340,7 +350,7 @@ int main()
     bool pause = false;
     while(true)
     {
-        for(int i = 0; i < systems.size(); ++i)
+        for(unsigned int i = 0; i < systems.size(); ++i)
         {
             auto state = systems[i]->state();
             

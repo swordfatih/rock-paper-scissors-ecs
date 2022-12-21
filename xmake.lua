@@ -3,6 +3,7 @@ add_requires("sfml-nocmake 2.6.0", "cntity master")
 
 target("rps")
     set_languages("c++20")
+    set_warnings("all", "error")
 
     add_packages("sfml-nocmake", "cntity") 
 
