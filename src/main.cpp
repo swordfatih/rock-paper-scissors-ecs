@@ -34,9 +34,6 @@ struct Paper {};
 struct Scissors {};
 
 ////////////////////////////////////////////////
-using Manager = CNtity::Helper<Position, Rock, Paper, Scissors>;
-
-////////////////////////////////////////////////
 class System
 {
 public:
@@ -49,7 +46,7 @@ public:
         NONE
     };
 
-    System(Manager& helper) : m_helper(helper) {}
+    System(CNtity::Helper& helper) : m_helper(helper) {}
     virtual ~System() {}
 
     virtual void update() = 0;
@@ -60,14 +57,14 @@ public:
     }
 
 protected: 
-    Manager& m_helper;
+    CNtity::Helper& m_helper;
 };
 
 ////////////////////////////////////////////////
 class Collision : public System
 {
 public:
-    Collision(Manager& helper) : System(helper)
+    Collision(CNtity::Helper& helper) : System(helper), m_positions(helper.view<Position>())
     {
         
     }
@@ -80,11 +77,10 @@ public:
     template <typename Type, typename Enemy>
     void collide_with_enemy(const Position& position)
     {
-        auto&& enemies = m_helper.acquire<Position, Enemy>();
+        auto&& enemies = m_helper.view<Position, Enemy>().each();
 
-        for(auto&& [e, p]: enemies)
+        for(auto&& [e, pos, enemy]: enemies)
         {
-            auto&& pos = std::get<Position>(*p);
             if(sf::FloatRect(pos.x, pos.y, WIDTH, HEIGHT).intersects(sf::FloatRect(position.x, position.y, WIDTH, HEIGHT)))
             {
                 m_helper.remove<Enemy>(e);
@@ -95,12 +91,8 @@ public:
 
     virtual void update()
     {
-        auto positions = m_helper.acquire<Position>();
-
-        for(auto [entity, p]: positions)
+        for(auto [entity, position]: m_positions.each())
         {
-            auto&& position = std::get<Position>(*p);
-
             if(m_helper.has<Rock>(entity))
             {
                 collide_with_enemy<Rock, Scissors>(position);
@@ -122,6 +114,7 @@ public:
     }
 
 private:
+    CNtity::View<Position> m_positions;
 };
 
 
@@ -129,7 +122,7 @@ private:
 class Movement : public System
 {
 public:
-    Movement(Manager& helper) : System(helper)
+    Movement(CNtity::Helper& helper) : System(helper), m_positions(helper.view<Position>())
     {
         
     }
@@ -142,43 +135,51 @@ public:
     template <typename Type>
     Position closest_of_type(Position& position, bool& found)
     {
-        auto elements = m_helper.acquire<Position, Type>();
+        auto elements = m_helper.view<Position, Type>().each();
         auto min = std::min_element(elements.begin(), elements.end(), [&](auto first, auto second)
         {
-            return position.distance(std::get<Position>(*first.second)) < position.distance(std::get<Position>(*second.second));
+            auto [first_ent, first_pos, first_type] = first;
+            auto [second_ent, second_pos, second_type] = second;
+            return position.distance(first_pos) < position.distance(second_pos);
         });
 
-        if(min != elements.end())
-            found = true;
+        if(min == elements.end())
+        {
+            found = false;
+            return Position{};
+        }
 
-        return found ? std::get<Position>(*(min->second)) : Position{};
+        found = true;
+        auto [min_ent, min_pos, min_type] = *min;
+
+        return min_pos;
     }
 
     virtual void update()
     {
         if(m_clock.getElapsedTime().asMilliseconds() > m_interval)
         {
-            m_helper.for_each<Position>([&](auto entity, auto position)
+            m_positions.each([&](auto entity, auto& position)
             {
                 Position enemy;
                 bool found = false;
 
                 if(m_helper.has<Rock>(entity))
-                    enemy = closest_of_type<Scissors>(*position, found);
+                    enemy = closest_of_type<Scissors>(position, found);
                 else if(m_helper.has<Scissors>(entity))
-                    enemy = closest_of_type<Paper>(*position, found);
+                    enemy = closest_of_type<Paper>(position, found);
                 else if(m_helper.has<Paper>(entity))
-                    enemy = closest_of_type<Rock>(*position, found);
+                    enemy = closest_of_type<Rock>(position, found);
 
                 if(found)
                 {
-                    Position vector = {enemy.x - position->x, enemy.y - position->y};
+                    Position vector = {enemy.x - position.x, enemy.y - position.y};
 
                     if(vector.x != 0)
-                        position->x += vector.x / std::abs(vector.x);
+                        position.x += vector.x / std::abs(vector.x);
 
                     if(vector.y != 0)
-                        position->y += vector.y / std::abs(vector.y);
+                        position.y += vector.y / std::abs(vector.y);
                 }  
             });
 
@@ -187,6 +188,7 @@ public:
     }
 
 private:
+    CNtity::View<Position> m_positions;
     sf::Clock m_clock;
     int m_interval = 30;
 };
@@ -195,7 +197,7 @@ private:
 class Render : public System
 {
 public:
-    Render(Manager& helper) : System(helper), m_window(sf::VideoMode(MAX_X, MAX_Y), "Rock Paper Scissors"), m_paused(false)
+    Render(CNtity::Helper& helper) : System(helper), m_positions(m_helper.view<Position>()), m_papers(m_helper.view<Paper>()), m_rocks(m_helper.view<Rock>()), m_scissors(m_helper.view<Scissors>()), m_window(sf::VideoMode(MAX_X, MAX_Y), "Rock Paper Scissors"), m_paused(false)
     {
         m_ui_view.setCenter(m_window.getSize().x / 2, m_window.getSize().y / 2);
         m_ui_view.setSize(m_window.getSize().x, m_window.getSize().y);
@@ -208,51 +210,11 @@ public:
         return m_window.isOpen() ? (m_paused ? System::State::PAUSE : System::State::PLAY) : System::State::CLOSE;
     }
     
-    static void dump(Manager& helper)
+    static void dump(CNtity::Helper& helper)
     {
-        helper.for_each<Position>([&](auto entity, auto position) {
-            auto components = helper.retrieve(entity);
-            std::sort(components.begin(), components.end(), [](auto first, auto second)
-            {
-                return first->index() < second->index();
-            });
-
-            std::cout << entity << " ";
-            for(auto&& component: components)
-            {
-                switch(component->index())
-                {
-                    case 0: 
-                        std::cout << "Position ";
-                        break;
-                    case 1: 
-                        std::cout << "Rock ";
-                        break;
-                    case 2: 
-                        std::cout << "Paper ";
-                        break;
-                    case 3: 
-                        std::cout << "Scissors ";
-                        break;
-                    default:
-                        break;
-                }
-            }
-            std::cout << std::endl;
-        });
-
-        int count = 0;
-        helper.for_each<Rock>([&](auto entity, auto element) { count++; });
-        std::cout << std::dec << "rock count: " << count << std::endl;
-
-        count = 0;
-        helper.for_each<Paper>([&](auto entity, auto element) { count++; });
-        std::cout << "paper count: " << count << std::endl;
-
-        count = 0;
-        helper.for_each<Scissors>([&](auto entity, auto element) { count++; });
-        std::cout << "scissors count: " << count << std::endl;
-
+        std::cout << std::dec << "rock count: " << helper.entities<Rock>().size() << std::endl;
+        std::cout << std::dec << "paper count: " << helper.entities<Paper>().size() << std::endl;
+        std::cout << std::dec << "scissors count: " << helper.entities<Scissors>().size() << std::endl;
         std::cout << std::endl;
     }
 
@@ -278,10 +240,10 @@ public:
 
         m_window.setView(m_ui_view);
 
-        m_helper.for_each<Position>([&](auto entity, auto position)
+        m_positions.each([&](auto entity, auto& position)
         {
             sf::Transform translation;
-            translation.translate(position->x, position->y);
+            translation.translate(position.x, position.y);
 
             sf::Sprite sprite(m_texture_rps);
 
@@ -301,6 +263,10 @@ public:
     }
 
 private:
+    CNtity::View<Position> m_positions;
+    CNtity::View<Rock> m_rocks;
+    CNtity::View<Paper> m_papers;
+    CNtity::View<Scissors> m_scissors;
     sf::RenderWindow m_window;
     sf::View m_ui_view;
     sf::Clock m_clock;
@@ -311,7 +277,7 @@ private:
 ////////////////////////////////////////////////
 int main() 
 {
-    Manager helper;
+    CNtity::Helper helper;
 
     std::random_device m_device;  
     std::mt19937 m_gen(m_device()); 
